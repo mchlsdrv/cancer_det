@@ -10,6 +10,8 @@ import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
+from ml.nn.cnn.utils.regularization import stochastic_depth
+plt.style.use('ggplot')
 
 
 # - Classes
@@ -47,6 +49,8 @@ class ResBlock(nn.Module):
 
         x += x_identity
         x = self.activation(x)
+
+        x = stochastic_depth(self, x, min_survival_prop=0.5)
 
         return x
 
@@ -107,39 +111,6 @@ class ResNet(nn.Module):
         return nn.Sequential(*layers)
 
 
-def get_resnet50(image_channels=3, num_classes=1000):
-    return ResNet(block=ResBlock, layers=[3, 4, 6, 3], image_channels=image_channels, num_classes=num_classes)
-
-
-def get_resnet101(image_channels=3, num_classes=1000):
-    return ResNet(block=ResBlock, layers=[3, 4, 23, 3], image_channels=image_channels, num_classes=num_classes)
-
-
-def get_resnet152(image_channels=3, num_classes=1000):
-    return ResNet(block=ResBlock, layers=[3, 8, 36, 3], image_channels=image_channels, num_classes=num_classes)
-
-
-def test_resnet50():
-    net = get_resnet50()
-    x = torch.randn(2, 3, 224, 224)
-    y = net(x).to('cuda')
-    print(y.shape)
-
-
-def test_resnet101():
-    net = get_resnet101()
-    x = torch.randn(2, 3, 224, 224)
-    y = net(x).to('cuda')
-    print(y.shape)
-
-
-def test_resnet152():
-    net = get_resnet152()
-    x = torch.randn(2, 3, 224, 224)
-    y = net(x).to('cuda')
-    print(y.shape)
-
-
 class DataSet(Dataset):
     def __init__(self, data_df: pd.DataFrame, augs: A.Compose):
         self.data_df = data_df
@@ -163,14 +134,27 @@ class DataSet(Dataset):
         # - Run regular augmentations on the cropped / rescaled image
         img = self.augs(image=img, mask=img).get('image')
 
+        img = np.expand_dims(img[:, :, 0], -1)
+
         img, lbl = torch.tensor(img, dtype=torch.float), torch.tensor(lbl, dtype=torch.float)
 
         img = torch.permute(img, (2, 0, 1))
 
         return img, lbl
 
-
 # - Util functions
+def get_resnet50(image_channels=3, num_classes=1000):
+    return ResNet(block=ResBlock, layers=[3, 4, 6, 3], image_channels=image_channels, num_classes=num_classes)
+
+
+def get_resnet101(image_channels=3, num_classes=1000):
+    return ResNet(block=ResBlock, layers=[3, 4, 23, 3], image_channels=image_channels, num_classes=num_classes)
+
+
+def get_resnet152(image_channels=3, num_classes=1000):
+    return ResNet(block=ResBlock, layers=[3, 8, 36, 3], image_channels=image_channels, num_classes=num_classes)
+
+
 def get_image(image_file: str or pathlib.Path):
     img = cv2.imread(str(image_file), cv2.IMREAD_UNCHANGED)
     return img
@@ -196,10 +180,11 @@ def get_name_scale_index_type(data_file: str):
 def get_train_augs():
     return A.Compose(
         [
+            A.ToGray(p=1.0),
             A.OneOf([
                 A.RandomRotate90(),
-                A.RandomBrightnessContrast(),
-                A.GaussNoise(),
+                # A.RandomBrightnessContrast(),
+                # A.GaussNoise(),
                 A.VerticalFlip(),
                 A.HorizontalFlip(),
             ], p=0.5),
@@ -214,10 +199,11 @@ def get_train_augs():
 def get_test_augs():
     return A.Compose(
         [
+            A.ToGray(p=1.0),
             A.OneOf([
                 A.RandomRotate90(),
-                A.RandomBrightnessContrast(),
-                A.GaussNoise(),
+                # A.RandomBrightnessContrast(),
+                # A.GaussNoise(),
                 A.VerticalFlip(),
                 A.HorizontalFlip(),
             ], p=0.5),
@@ -315,17 +301,35 @@ def get_data(data_root_dir: pathlib.Path or str, metadata_file: pathlib.Path or 
 
 
 def get_x_ticks(epoch):
-    x_ticks = np.arange(epoch + 1)
+    x_ticks = np.arange(1, epoch)
     if 20 < epoch < 50:
-        x_ticks = np.arange(0, epoch, 5)
+        x_ticks = np.arange(1, epoch, 5)
     elif 50 < epoch < 100:
-        x_ticks = np.arange(0, epoch, 10)
+        x_ticks = np.arange(1, epoch, 10)
     elif 100 < epoch < 1000:
-        x_ticks = np.arange(0, epoch, 50)
+        x_ticks = np.arange(1, epoch, 50)
     elif 1000 < epoch < 10000:
-        x_ticks = np.arange(0, epoch, 500)
+        x_ticks = np.arange(1, epoch, 500)
 
     return x_ticks
+
+
+def plot_loss(train_losses, val_losses, x_ticks: np.ndarray, x_label: str, y_label: str,
+              title='Train vs Validation Plot',
+              train_loss_marker='bo-', val_loss_marker='r*-',
+              train_loss_label='train', val_loss_label='val', output_dir: pathlib.Path or str = './outputs'):
+    fig, ax = plt.subplots()
+    ax.plot(x_ticks, train_losses, train_loss_marker, label=train_loss_label)
+    ax.plot(x_ticks, val_losses, val_loss_marker, label=val_loss_label)
+    ax.set(xlabel=x_label, ylabel=y_label, xticks=get_x_ticks(epoch=epch))
+    fig.suptitle(title)
+    plt.legend()
+    output_dir = pathlib.Path(output_dir)
+    os.makedirs(output_dir, exist_ok=True)
+    plot_output_dir = output_dir / 'plots'
+    os.makedirs(plot_output_dir, exist_ok=True)
+    fig.savefig(plot_output_dir / 'loss.png')
+    plt.close(fig)
 
 
 # - Hyperparameters
@@ -344,7 +348,8 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 # -- Architecture
 HEIGHT = 512
 WIDTH = 512
-CHANNELS = 3
+CHANNELS = 1
+# CHANNELS = 3
 CLASSES = 2
 MODEL = get_resnet50(image_channels=CHANNELS, num_classes=CLASSES).to(DEVICE)
 
@@ -353,13 +358,14 @@ BATCH_SIZE = 16
 VAL_BATCH_SIZE_SCALE = 4
 VAL_PROP = 0.2
 LEARNING_RATE = 0.001
-EPOCHS = 100
+EPOCHS = 1500
 N_WORKERS = 4
 PIN_MEMORY = True
 
 OPTIMIZER = torch.optim.Adam(MODEL.parameters(), lr=LEARNING_RATE)
 LOSS_FUNC = nn.MSELoss()
 
+LOSS_PLOT_RESOLUTION = 10
 
 # - Main
 if __name__ == '__main__':
@@ -374,6 +380,11 @@ if __name__ == '__main__':
 
     epoch_train_losses = np.array([])
     epoch_val_losses = np.array([])
+
+    loss_plot_start_idx, loss_plot_end_idx = 0, LOSS_PLOT_RESOLUTION
+    loss_plot_train_history = []
+    loss_plot_val_history = []
+
     # - Training loop
     for epch in tqdm(range(EPOCHS)):
         # - Train
@@ -410,15 +421,24 @@ if __name__ == '__main__':
         epoch_train_losses = np.append(epoch_train_losses, btch_train_losses.mean())
         epoch_val_losses = np.append(epoch_val_losses, btch_val_losses.mean())
 
-        fig, ax = plt.subplots()
-        epochs = np.arange(epch + 1)
+        if len(epoch_train_losses) >= loss_plot_end_idx and len(epoch_val_losses) >= loss_plot_end_idx:
 
-        ax.plot(epochs, epoch_train_losses, 'bo-', label='train')
-        ax.plot(epochs, epoch_val_losses, 'r*-', label='val')
-        ax.set(xlabel='Epoch', ylabel='MSE', xticks=get_x_ticks(epoch=epch))#, xlim=[0, epch])
-        fig.suptitle('Loss vs Epochs')
-        plt.legend()
-        plot_output_dir = OUTPUT_DIR / 'plots'
-        os.makedirs(plot_output_dir, exist_ok=True)
-        fig.savefig(plot_output_dir / 'loss.png')
-        plt.close(fig)
+            # - Add the mean history
+            loss_plot_train_history.append(epoch_train_losses[loss_plot_start_idx:loss_plot_end_idx].mean())
+            loss_plot_val_history.append(epoch_val_losses[loss_plot_start_idx:loss_plot_end_idx].mean())
+
+            # - Plot the mean history
+            plot_loss(
+                train_losses=loss_plot_train_history,
+                val_losses=loss_plot_val_history,
+                x_ticks=np.arange(1, (epch + 1) // LOSS_PLOT_RESOLUTION + 1) * LOSS_PLOT_RESOLUTION,
+                x_label='Epochs',
+                y_label='MSE',
+                title='Train vs Validation Plot',
+                train_loss_marker='b-', val_loss_marker='r-',
+                train_loss_label='train', val_loss_label='val',
+                output_dir=OUTPUT_DIR
+            )
+
+            loss_plot_start_idx += LOSS_PLOT_RESOLUTION
+            loss_plot_end_idx += LOSS_PLOT_RESOLUTION
