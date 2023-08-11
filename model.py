@@ -8,116 +8,18 @@ import albumentations as A
 import cv2
 import torch
 import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset
 from tqdm import tqdm
-from ml.nn.cnn.architectures import ResNet
+from ml.nn.cnn.architectures.ResNet import get_resnet50
+from ml.nn.cnn.utils.aux_funcs import save_checkpoint, get_train_val_split, get_data_loaders, plot_loss
 
-# from ml.nn.cnn.utils.regularization import stochastic_depth
 plt.style.use('ggplot')
 
-
-# - Classes
-# class ResBlock(nn.Module):
-#     def __init__(self, in_channels, out_channels, identity_downsample=None, stride=1):
-#         super().__init__()
-#         self.channel_expansion = 4
-#         self.conv1 = nn.Conv2d(in_channels=in_channels, out_channels=out_channels, kernel_size=1, stride=1, padding=0)
-#         self.bn1 = nn.BatchNorm2d(out_channels)
-#         self.conv2 = nn.Conv2d(
-#             in_channels=out_channels, out_channels=out_channels, kernel_size=3, stride=stride, padding=1)
-#         self.bn2 = nn.BatchNorm2d(out_channels)
-#         self.conv3 = nn.Conv2d(
-#             in_channels=out_channels, out_channels=out_channels * self.channel_expansion,
-#             kernel_size=1, stride=1, padding=0)
-#         self.bn3 = nn.BatchNorm2d(out_channels * self.channel_expansion)
-#         self.activation = nn.ELU()
-#         self.identity_downsample = identity_downsample
-#
-#     def forward(self, x):
-#         x_identity = x
-#
-#         x = self.conv1(x)
-#         x = self.bn1(x)
-#         x = self.activation(x)
-#         x = self.conv2(x)
-#         x = self.bn2(x)
-#         x = self.activation(x)
-#         x = self.conv3(x)
-#         x = self.bn3(x)
-#         x = self.activation(x)
-#
-#         if self.identity_downsample is not None:
-#             x_identity = self.identity_downsample(x_identity)
-#
-#         x += x_identity
-#         x = self.activation(x)
-#
-#         x = stochastic_depth(self, x, min_survival_prop=0.5)
-#
-#         return x
-#
-#
-# class ResNet(nn.Module):
-#     def __init__(self, block, layers, image_channels, num_classes):
-#         super().__init__()
-#         self.in_channels = 64
-#         self.conv1 = nn.Conv2d(in_channels=image_channels, out_channels=64, kernel_size=7, stride=2, padding=3)
-#         self.bn1 = nn.BatchNorm2d(64)
-#         self.activation = nn.ELU()
-#         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
-#
-#         # ResNet layers
-#         self.layer1 = self._make_layer(block=block, num_residual_blocks=layers[0], out_channels=64, stride=1)
-#         self.layer2 = self._make_layer(block=block, num_residual_blocks=layers[1], out_channels=128, stride=2)
-#         self.layer3 = self._make_layer(block=block, num_residual_blocks=layers[2], out_channels=256, stride=2)
-#         self.layer4 = self._make_layer(block=block, num_residual_blocks=layers[3], out_channels=512, stride=2)
-#
-#         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
-#         self.fc = nn.Linear(512 * 4, num_classes)
-#
-#     def forward(self, x):
-#         x = self.conv1(x)
-#         x = self.bn1(x)
-#         x = self.activation(x)
-#         x = self.maxpool(x)
-#
-#         x = self.layer1(x)
-#         x = self.layer2(x)
-#         x = self.layer3(x)
-#         x = self.layer4(x)
-#
-#         x = self.avgpool(x)
-#         x = x.reshape(x.shape[0], -1)
-#         x = self.fc(x)
-#
-#         return x
-#
-#     def _make_layer(self, block, num_residual_blocks, out_channels, stride):
-#         identity_downsample = None
-#         layers = []
-#
-#         if stride != 1 or self.in_channels != out_channels * 4:
-#             identity_downsample = nn.Sequential(
-#                 nn.Conv2d(in_channels=self.in_channels, out_channels=out_channels * 4, kernel_size=1, stride=stride),
-#                 nn.BatchNorm2d(out_channels * 4)
-#             )
-#
-#         layers.append(block(
-#             in_channels=self.in_channels, out_channels=out_channels,
-#             identity_downsample=identity_downsample, stride=stride))
-#         self.in_channels = out_channels * 4
-#
-#         for i in range(num_residual_blocks - 1):
-#             layers.append(block(in_channels=self.in_channels, out_channels=out_channels))
-#
-#         return nn.Sequential(*layers)
-#
 
 class DataSet(Dataset):
     def __init__(self, data_df: pd.DataFrame, augs: A.Compose):
         self.data_df = data_df
         self.augs = augs
-        # self.resize = A.Resize(height=HEIGHT, width=WIDTH, p=1.0)
         self.random_crop = A.RandomCrop(height=HEIGHT, width=WIDTH, p=1.0)
 
     def __len__(self):
@@ -125,18 +27,22 @@ class DataSet(Dataset):
 
     def __getitem__(self, index):
         # - Get the data of the current sample
-        img_fl, scale, pdl1, pdl2 = self.data_df.loc[index, ['path', 'scale', 'pdl1', 'pdl2']].values.flatten()
+        img_fl, pdl1, pdl2, rspns = self.data_df.loc[
+            index, ['path', 'pdl1', 'pdl2', 'response']
+        ].values.flatten()
 
         # - Get the image
         img = get_image(image_file=img_fl)
 
         # - Get the label
-        lbl = np.array([pdl1, pdl2])
+        lbl = np.array([rspns])
+        # lbl = np.array([pdl1, pdl2])
 
         # - Run regular augmentations on the cropped / rescaled image
         img = self.augs(image=img, mask=img).get('image')
 
-        img = np.expand_dims(img[:, :, 0], -1)
+        # img = np.expand_dims(img[:, :, 0], -1)
+        # img = np.expand_dims(img, 0)
 
         img, lbl = torch.tensor(img, dtype=torch.float), torch.tensor(lbl, dtype=torch.float)
 
@@ -146,18 +52,6 @@ class DataSet(Dataset):
 
 
 # - Util functions
-def get_resnet50(image_channels=3, num_classes=1000):
-    return ResNet.ResNet(block=ResNet.ResBlock, layers=[3, 4, 6, 3], image_channels=image_channels, num_classes=num_classes)
-
-
-def get_resnet101(image_channels=3, num_classes=1000):
-    return ResNet.ResNet(block=ResNet.ResBlock, layers=[3, 4, 23, 3], image_channels=image_channels, num_classes=num_classes)
-
-
-def get_resnet152(image_channels=3, num_classes=1000):
-    return ResNet.ResNet(block=ResNet.ResBlock, layers=[3, 8, 36, 3], image_channels=image_channels, num_classes=num_classes)
-
-
 def get_image(image_file: str or pathlib.Path):
     img = cv2.imread(str(image_file), cv2.IMREAD_UNCHANGED)
     return img
@@ -171,7 +65,8 @@ def get_name_type(file_name: str) -> (str, str):
     """
 
     fl_rvrs = file_name[::-1]
-    fl_name_rvrs = fl_rvrs[fl_rvrs.index('.') + 1:fl_rvrs.index('_')]
+    fl_name_rvrs = fl_rvrs[fl_rvrs.index('.') + 1:]
+    fl_name_rvrs = fl_name_rvrs[fl_name_rvrs.index('_') + 1:]
     fl_name = fl_name_rvrs[fl_name_rvrs.index('_') + 1:][::-1]
     fl_type = fl_rvrs[:fl_rvrs.index('.')][::-1]
 
@@ -202,123 +97,47 @@ def get_test_augs():
         ], p=1.0)
 
 
-def get_train_val_split(data_df: pd.DataFrame, val_prop: float = .2):
-    n_items = len(data_df)
-    item_idxs = np.arange(n_items)
-    n_val_items = int(n_items * val_prop)
-
-    # - Randomly pick the validation items' indices
-    val_idxs = np.random.choice(item_idxs, n_val_items, replace=False)
-
-    # - Pick the items for the validation set
-    val_data = data_df.loc[val_idxs, :].reset_index(drop=True)
-
-    # - The items for training are the once which are not included in the
-    # validation set
-    train_data = data_df.loc[np.setdiff1d(item_idxs, val_idxs), :].reset_index(drop=True)
-
-    return train_data, val_data
-
-
-def get_data_loaders(data: pd.DataFrame, batch_size: int, val_prop: float):
-    # - Split data into train / validation datasets
-    train_data_df, val_data_df = get_train_val_split(data_df=data, val_prop=val_prop)
-
-    # - Create the train / validation dataloaders
-    train_dl = DataLoader(
-        DataSet(data_df=train_data_df, augs=get_train_augs()),
-        batch_size=batch_size,
-        num_workers=N_WORKERS,
-        pin_memory=PIN_MEMORY,
-        shuffle=True
-    )
-
-    val_dl = DataLoader(
-        DataSet(data_df=val_data_df, augs=get_test_augs()),
-        batch_size=batch_size // VAL_BATCH_SIZE_SCALE,
-        num_workers=N_WORKERS,
-        pin_memory=PIN_MEMORY,
-        shuffle=False
-    )
-
-    return train_dl, val_dl
-
-
-def get_data(data_root_dir: pathlib.Path or str, metadata_file: pathlib.Path or str):
+def get_data(data_root_dir: pathlib.Path or str, metadata_file: pathlib.Path or str, save_file: pathlib.Path or str):
     metadata_df = pd.read_csv(metadata_file)
-    lbls_df = metadata_df.loc[7:35, ['Path number', 'PD1 score', 'PDL1 score', 'PDL2 score']]
+    lbls_df = metadata_df.loc[7:35, ['Path number', 'PD1 score', 'PDL1 score', 'PDL2 score', 'Response binary']]
 
-    data_df = pd.DataFrame(columns=['path', 'name', 'response', 'pd1_score', 'pdl1_score', 'pdl2_score'])
-    for root, folders, _ in os.walk(data_root_dir, topdown=False):
-        for folder in folders:
-            for sub_root, sub_folders, files in os.walk(pathlib.Path(root) / folder):
-                if DEBUG:
-                    print(f'> Getting data from {sub_root} ...\n')
-                for file in tqdm(files):
-                    file_name, file_type = get_name_type(file_name=file)
-                    values = lbls_df.loc[lbls_df.loc[:, 'Path number'] == file_name, [
-                        'response binary', 'pd1 score', 'pdl1 score', 'pdl2 score'
-                    ]
-                    ].values.flatten()
-                    if len(values) > 1:
-                        resp_bin, pd1_scr, pdl1_scr, pdl2_scr = values
-                        if DEBUG:
-                            print(f'''
-                            File name: {file_name}
-                            - Response {resp_bin}
-                            - PD1 score: {pd1_scr}
-                            - PDL1 score: {pdl1_scr}
-                            - PDL2 score: {pdl2_scr}
-                            ''')
-                        file_data_df = pd.DataFrame(
-                            dict(
-                                path=f'{sub_root}/{file}',
-                                name=file_name,
-                                response=resp_bin,
-                                pd1=pd1_scr,
-                                pdl1=pdl1_scr,
-                                pdl2=pdl2_scr,
-                                type=file_type,
-                            ),
-                            index=pd.Index([0])
-                        )
-                        data_df = pd.concat([data_df, file_data_df], axis=0, ignore_index=True)
-                    else:
-                        if DEBUG:
-                            print(f'(WARNING) No PDL1 / PDL2 values were found for file {sub_root}/{file}!')
+    data_df = pd.DataFrame(columns=['name', 'path', 'pd1', 'pdl1', 'pdl2', 'response'])
+    img_fls = os.listdir(data_root_dir)
+    for img_fl in tqdm(img_fls):
+        if DEBUG:
+            print(f'> Getting data from {data_root_dir} ...\n')
+        file_name, file_type = get_name_type(file_name=img_fl)
+        values = lbls_df.loc[lbls_df.loc[:, 'Path number'] == file_name, [
+            'PD1 score', 'PDL1 score', 'PDL2 score', 'Response binary'
+        ]
+        ].values.flatten()
+        if len(values) > 1:
+            pd1_scr, pdl1_scr, pdl2_scr, rspns = values
+            if DEBUG:
+                print(f'''
+                File name: {file_name}
+                - Response {rspns}
+                - PD1 score: {pd1_scr}
+                - PDL1 score: {pdl1_scr}
+                - PDL2 score: {pdl2_scr}
+                - Response: {rspns}
+                ''')
+            file_data_df = pd.DataFrame(
+                dict(
+                    name=file_name,
+                    path=f'{data_root_dir}/{img_fl}',
+                    pd1=pd1_scr,
+                    pdl1=pdl1_scr,
+                    pdl2=pdl2_scr,
+                    response=rspns,
+                ),
+                index=pd.Index([0])
+            )
+            data_df = pd.concat([data_df, file_data_df], axis=0, ignore_index=True)
+    if isinstance(save_file, pathlib.Path) or isinstance(save_file, str):
+        save_file = pathlib.Path(save_file)
+        data_df.to_csv(save_file, index=False)
     return data_df
-
-
-def get_x_ticks(epoch):
-    x_ticks = np.arange(1, epoch)
-    if 20 < epoch < 50:
-        x_ticks = np.arange(1, epoch, 5)
-    elif 50 < epoch < 100:
-        x_ticks = np.arange(1, epoch, 10)
-    elif 100 < epoch < 1000:
-        x_ticks = np.arange(1, epoch, 50)
-    elif 1000 < epoch < 10000:
-        x_ticks = np.arange(1, epoch, 500)
-
-    return x_ticks
-
-
-def plot_loss(train_losses, val_losses, x_ticks: np.ndarray, x_label: str, y_label: str,
-              title='Train vs Validation Plot',
-              train_loss_marker='bo-', val_loss_marker='r*-',
-              train_loss_label='train', val_loss_label='val', output_dir: pathlib.Path or str = './outputs'):
-    fig, ax = plt.subplots()
-    ax.plot(x_ticks, train_losses, train_loss_marker, label=train_loss_label)
-    ax.plot(x_ticks, val_losses, val_loss_marker, label=val_loss_label)
-    ax.set(xlabel=x_label, ylabel=y_label, xticks=get_x_ticks(epoch=epch))
-    fig.suptitle(title)
-    plt.legend()
-    output_dir = pathlib.Path(output_dir)
-    os.makedirs(output_dir, exist_ok=True)
-    plot_output_dir = output_dir / 'plots'
-    os.makedirs(plot_output_dir, exist_ok=True)
-    fig.savefig(plot_output_dir / 'loss.png')
-    plt.close(fig)
 
 
 # - Hyperparameters
@@ -330,24 +149,29 @@ DEVICE = torch.device('cuda') if torch.cuda.is_available() else torch.device('cp
 # DATA_PATH = pathlib.Path('C:/Users/Michael/Desktop/University/PhD/Projects/CancerDet/Cancer Dataset')  # Windows
 # DATA_PATH = pathlib.Path('/Users/mchlsdrv/Desktop/University/PhD/Projects/CancerDet/data')  # Mac
 DATA_PATH = pathlib.Path('/home/sidorov/projects/cancer_det/data')  # 4GPUs
-METADATA_FILE = DATA_PATH / 'Rambam clinical table 26.6.23.csv'
+TRAIN_DATA_PATH = DATA_PATH / 'train'
+TRAIN_DATA_DF_PATH = DATA_PATH / 'train_data_df.csv'
+METADATA_FILE = DATA_PATH / 'Table.csv'
 OUTPUT_DIR = pathlib.Path('/media/oldrrtammyfs/Users/sidorov/CancerDet/output')
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # -- Architecture
-HEIGHT = 512
-WIDTH = 512
-CHANNELS = 1
-# CHANNELS = 3
-CLASSES = 2
+HEIGHT = 256
+# HEIGHT = 512
+WIDTH = 256
+# WIDTH = 256
+# CHANNELS = 1
+CHANNELS = 3
+CLASSES = 1
+# CLASSES = 2
 MODEL = get_resnet50(image_channels=CHANNELS, num_classes=CLASSES).to(DEVICE)
 
 # -- Training
-BATCH_SIZE = 16
-VAL_BATCH_SIZE_SCALE = 4
+TRAIN_BATCH_SIZE = 32
+VAL_BATCH_SIZE = 16
 VAL_PROP = 0.2
 LEARNING_RATE = 0.001
-EPOCHS = 1500
+EPOCHS = 100
 N_WORKERS = 4
 PIN_MEMORY = True
 
@@ -359,12 +183,23 @@ LOSS_PLOT_RESOLUTION = 10
 # - Main
 if __name__ == '__main__':
     print(f'- Getting data')
-    train_data_frame = get_data(data_root_dir=DATA_PATH, metadata_file=METADATA_FILE)
+    if not TRAIN_DATA_DF_PATH.is_file():
+        train_data_frame = get_data(data_root_dir=TRAIN_DATA_PATH, metadata_file=METADATA_FILE,
+                                    save_file=TRAIN_DATA_DF_PATH)
+    else:
+        train_data_frame = pd.read_csv(TRAIN_DATA_DF_PATH)
+
+    # - Split data into train / validation datasets
+    train_data_df, val_data_df = get_train_val_split(data_df=train_data_frame.loc[:1000, :], val_prop=VAL_PROP)
+
+    train_ds = DataSet(data_df=train_data_df, augs=get_train_augs())
+    val_ds = DataSet(data_df=val_data_df, augs=get_test_augs())
 
     train_data_loader, val_data_loader = get_data_loaders(
-        data=train_data_frame,
-        batch_size=BATCH_SIZE,
-        val_prop=VAL_PROP
+        train_dataset=train_ds,
+        train_batch_size=TRAIN_BATCH_SIZE,
+        val_dataset=val_ds,
+        val_batch_size=VAL_BATCH_SIZE,
     )
 
     epoch_train_losses = np.array([])
@@ -427,6 +262,11 @@ if __name__ == '__main__':
                 train_loss_label='train', val_loss_label='val',
                 output_dir=OUTPUT_DIR
             )
+
+            # - Save model weights
+            checkpoint_dir = OUTPUT_DIR / 'checkpoints'
+            os.makedirs(checkpoint_dir, exist_ok=True)
+            save_checkpoint(model=MODEL, filename=checkpoint_dir / f'weights_epoch_{epch}.pth.tar', epoch=epch)
 
             loss_plot_start_idx += LOSS_PLOT_RESOLUTION
             loss_plot_end_idx += LOSS_PLOT_RESOLUTION

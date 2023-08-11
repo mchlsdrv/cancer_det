@@ -10,7 +10,8 @@ import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
-from ml.nn.cnn.architectures import ResNet
+from ml.nn.cnn.architectures.ResNet import get_resnet50
+from ml.nn.cnn.utils.aux_funcs import save_checkpoint
 
 plt.style.use('ggplot')
 
@@ -46,21 +47,6 @@ class DataSet(Dataset):
 
 
 # - Util functions
-def get_resnet50(image_channels=3, num_classes=1000):
-    return ResNet.ResNet(block=ResNet.ResBlock, layers=[3, 4, 6, 3], image_channels=image_channels,
-                         num_classes=num_classes)
-
-
-def get_resnet101(image_channels=3, num_classes=1000):
-    return ResNet.ResNet(block=ResNet.ResBlock, layers=[3, 4, 23, 3], image_channels=image_channels,
-                         num_classes=num_classes)
-
-
-def get_resnet152(image_channels=3, num_classes=1000):
-    return ResNet.ResNet(block=ResNet.ResBlock, layers=[3, 8, 36, 3], image_channels=image_channels,
-                         num_classes=num_classes)
-
-
 def get_image(image_file: str or pathlib.Path):
     img = cv2.imread(str(image_file), cv2.IMREAD_COLOR)
     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
@@ -206,20 +192,6 @@ def plot_loss(train_losses, val_losses, x_ticks: np.ndarray, x_label: str, y_lab
     os.makedirs(plot_output_dir, exist_ok=True)
     fig.savefig(plot_output_dir / 'loss.png')
     plt.close(fig)
-
-
-def save_checkpoint(model: torch.nn.Module, filename: pathlib.Path or str = 'my_checkpoint.pth.tar', epoch: int = 0):
-    if epoch > 0:
-        print(f'\n=> Saving checkpoint for epoch {epoch}')
-    else:
-        print(f'\n=> Saving checkpoint')
-
-    torch.save(model.state_dict(), filename)
-
-
-def load_checkpoint(model, checkpoint):
-    print('=> Loading checkpoint')
-    model.load_state_dict(checkpoint['state_dict'])
 
 
 # - Hyperparameters
