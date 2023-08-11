@@ -1,17 +1,21 @@
 import os
+import sys
 import pathlib
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import albumentations as A
-import cv2
 import torch
 import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset
 from tqdm import tqdm
+
 from ml.nn.cnn.architectures.ResNet import get_resnet50
-from ml.nn.cnn.utils.aux_funcs import save_checkpoint
+from ml.nn.utils.aux_funcs import get_train_val_split, get_data_loaders, plot_loss, save_checkpoint
+from python_utils.image_utils import get_image
+
+sys.path.append('/home/sidorov/dev')
 
 plt.style.use('ggplot')
 
@@ -47,12 +51,6 @@ class DataSet(Dataset):
 
 
 # - Util functions
-def get_image(image_file: str or pathlib.Path):
-    img = cv2.imread(str(image_file), cv2.IMREAD_COLOR)
-    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    return img
-
-
 def get_name_type(file_name: str) -> (str, str):
     """
     Receives a file name in form NAME_IDX1_IDX2.TIF and returns the name of the file
@@ -93,48 +91,6 @@ def get_test_augs():
         ], p=1.0)
 
 
-def get_train_val_split(data_df: pd.DataFrame, val_prop: float = .2):
-    n_items = len(data_df)
-    item_idxs = np.arange(n_items)
-    n_val_items = int(n_items * val_prop)
-
-    # - Randomly pick the validation items' indices
-    val_idxs = np.random.choice(item_idxs, n_val_items, replace=False)
-
-    # - Pick the items for the validation set
-    val_data = data_df.loc[val_idxs, :].reset_index(drop=True)
-
-    # - The items for training are the once which are not included in the
-    # validation set
-    train_data = data_df.loc[np.setdiff1d(item_idxs, val_idxs), :].reset_index(drop=True)
-
-    return train_data, val_data
-
-
-def get_data_loaders(data: pd.DataFrame, batch_size: int, val_prop: float):
-    # - Split data into train / validation datasets
-    train_data_df, val_data_df = get_train_val_split(data_df=data, val_prop=val_prop)
-
-    # - Create the train / validation dataloaders
-    train_dl = DataLoader(
-        DataSet(data_df=train_data_df, augs=get_train_augs()),
-        batch_size=batch_size,
-        num_workers=N_WORKERS,
-        pin_memory=PIN_MEMORY,
-        shuffle=True
-    )
-
-    val_dl = DataLoader(
-        DataSet(data_df=val_data_df, augs=get_test_augs()),
-        batch_size=batch_size // VAL_BATCH_SIZE_SCALE,
-        num_workers=N_WORKERS,
-        pin_memory=PIN_MEMORY,
-        shuffle=False
-    )
-
-    return train_dl, val_dl
-
-
 def get_data(data_root_dir: pathlib.Path or str):
     data_df = pd.DataFrame(columns=['image_file', 'valid'])
     for root, folders, _ in os.walk(data_root_dir, topdown=False):
@@ -162,38 +118,6 @@ def get_data(data_root_dir: pathlib.Path or str):
     return data_df
 
 
-def get_x_ticks(epoch):
-    x_ticks = np.arange(1, epoch)
-    if 20 < epoch < 50:
-        x_ticks = np.arange(1, epoch, 5)
-    elif 50 < epoch < 100:
-        x_ticks = np.arange(1, epoch, 10)
-    elif 100 < epoch < 1000:
-        x_ticks = np.arange(1, epoch, 50)
-    elif 1000 < epoch < 10000:
-        x_ticks = np.arange(1, epoch, 500)
-
-    return x_ticks
-
-
-def plot_loss(train_losses, val_losses, x_ticks: np.ndarray, x_label: str, y_label: str,
-              title='Train vs Validation Plot',
-              train_loss_marker='bo-', val_loss_marker='r*-',
-              train_loss_label='train', val_loss_label='val', output_dir: pathlib.Path or str = './outputs'):
-    fig, ax = plt.subplots()
-    ax.plot(x_ticks, train_losses, train_loss_marker, label=train_loss_label)
-    ax.plot(x_ticks, val_losses, val_loss_marker, label=val_loss_label)
-    ax.set(xlabel=x_label, ylabel=y_label, xticks=get_x_ticks(epoch=epch))
-    fig.suptitle(title)
-    plt.legend()
-    output_dir = pathlib.Path(output_dir)
-    os.makedirs(output_dir, exist_ok=True)
-    plot_output_dir = output_dir / 'plots'
-    os.makedirs(plot_output_dir, exist_ok=True)
-    fig.savefig(plot_output_dir / 'loss.png')
-    plt.close(fig)
-
-
 # - Hyperparameters
 # -- General
 DEBUG = False
@@ -215,12 +139,11 @@ CLASSES = 1
 MODEL = get_resnet50(image_channels=CHANNELS, num_classes=CLASSES).to(DEVICE)
 
 # -- Training
-BATCH_SIZE = 64
-VAL_BATCH_SIZE_SCALE = 16
+TRAIN_BATCH_SIZE = 64
+VAL_BATCH_SIZE = 16
 VAL_PROP = 0.2
 LEARNING_RATE = 0.001
 EPOCHS = 1500
-# N_WORKERS = 1
 N_WORKERS = 4
 PIN_MEMORY = True
 
@@ -234,10 +157,17 @@ if __name__ == '__main__':
     print(f'- Getting data')
     train_data_frame = get_data(data_root_dir=DATA_PATH)
 
+    # - Split data into train / validation datasets
+    train_data_df, val_data_df = get_train_val_split(data_df=train_data_frame.loc[:1000, :], val_prop=VAL_PROP)
+
+    train_ds = DataSet(data_df=train_data_df, augs=get_train_augs())
+    val_ds = DataSet(data_df=val_data_df, augs=get_test_augs())
+
     train_data_loader, val_data_loader = get_data_loaders(
-        data=train_data_frame,
-        batch_size=BATCH_SIZE,
-        val_prop=VAL_PROP
+        train_dataset=train_ds,
+        train_batch_size=TRAIN_BATCH_SIZE,
+        val_dataset=val_ds,
+        val_batch_size=VAL_BATCH_SIZE,
     )
 
     epoch_train_losses = np.array([])

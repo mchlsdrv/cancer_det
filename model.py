@@ -1,18 +1,21 @@
 import os
+import sys
 import pathlib
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import albumentations as A
-import cv2
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset
 from tqdm import tqdm
-from ml.nn.cnn.architectures.ResNet import get_resnet50
-from ml.nn.cnn.utils.aux_funcs import save_checkpoint, get_train_val_split, get_data_loaders, plot_loss
 
+from ml.nn.cnn.architectures.ResNet import get_resnet50
+from ml.nn.utils.aux_funcs import get_train_val_split, get_data_loaders, plot_loss, save_checkpoint
+from python_utils.image_utils import get_image
+
+sys.path.append('/home/sidorov/dev')
 plt.style.use('ggplot')
 
 
@@ -52,11 +55,6 @@ class DataSet(Dataset):
 
 
 # - Util functions
-def get_image(image_file: str or pathlib.Path):
-    img = cv2.imread(str(image_file), cv2.IMREAD_UNCHANGED)
-    return img
-
-
 def get_name_type(file_name: str) -> (str, str):
     """
     Receives a file name in form NAME_IDX1_IDX2.TIF and returns the name of the file
@@ -157,9 +155,7 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # -- Architecture
 HEIGHT = 256
-# HEIGHT = 512
 WIDTH = 256
-# WIDTH = 256
 # CHANNELS = 1
 CHANNELS = 3
 CLASSES = 1
