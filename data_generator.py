@@ -40,9 +40,9 @@ def create_data(data_root_dir: pathlib.Path, save_dir: pathlib.Path):
                 max_res_lvl = len(tiles.level_tiles) - 1
                 print(f'The slide has {max_res_lvl} levels')
                 print(f'''
-                Level {max_res_lvl} 
+                Level {max_res_lvl}
                     - Crop shape: {tiles.level_tiles[max_res_lvl]}
-                    - Number of crops: {tiles.level_tiles[max_res_lvl][0] * tiles.level_tiles[max_res_lvl][1]}  
+                    - Number of crops: {tiles.level_tiles[max_res_lvl][0] * tiles.level_tiles[max_res_lvl][1]}
                 ''')
 
                 cols, rows = tiles.level_tiles[max_res_lvl - 1]

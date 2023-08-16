@@ -1,8 +1,10 @@
+import datetime
 import os
 import sys
 import pathlib
-
+import cv2
 import matplotlib.pyplot as plt
+
 import numpy as np
 import pandas as pd
 import albumentations as A
@@ -11,41 +13,57 @@ import torch.nn as nn
 from torch.utils.data import Dataset
 from tqdm import tqdm
 
+sys.path.append('/home/sidorov/dev')
 from ml.nn.cnn.architectures.ResNet import get_resnet50
-from ml.nn.utils.aux_funcs import get_train_val_split, get_data_loaders, plot_loss, save_checkpoint
+from ml.nn.utils.aux_funcs import (
+    get_train_val_split,
+    get_data_loaders,
+    plot_loss,
+    save_checkpoint,
+    load_checkpoint,
+    get_arg_parser,
+    get_device
+)
 from python_utils.image_utils import get_image
 
-sys.path.append('/home/sidorov/dev')
 
 plt.style.use('ggplot')
 
-
 # - Classes
 class DataSet(Dataset):
-    def __init__(self, data_df: pd.DataFrame, augs: A.Compose):
+    def __init__(self, data_df: pd.DataFrame, augs: A.Compose, to_gray: bool,
+                 binary_label: bool, channels_first: bool = False):
         self.data_df = data_df
         self.augs = augs
+        self.to_gray = to_gray
+        self.binary_label = binary_label
+        self.channels_first = channels_first
 
     def __len__(self):
         return len(self.data_df)
 
     def __getitem__(self, index):
         # - Get the data of the current sample
-        img_fl, resp_bin = self.data_df.loc[index, ['image_file', 'valid']].values.flatten()
+        img_fl, valid = self.data_df.loc[index, ['image_file', 'valid']].values.flatten()
 
         # - Get the image
-        img = get_image(image_file=img_fl)
+        img = get_image(image_file=img_fl, to_gray=self.to_gray)
 
         # - Get the label
-        lbl = resp_bin
-        lbl = np.expand_dims(lbl, 0)
+        if self.binary_label:
+            if valid > 0:
+                lbl = np.array([1., 0.])
+            else:
+                lbl = np.array([0., 1.])
+        else:
+            lbl = np.array([valid])
 
         # - Run regular augmentations on the cropped / rescaled image
         img = self.augs(image=img, mask=img).get('image')
 
         img, lbl = torch.tensor(img, dtype=torch.float), torch.tensor(lbl, dtype=torch.float)
-
-        img = torch.permute(img, (2, 0, 1))
+        if self.channels_first:
+            img = torch.permute(img, (2, 0, 1))
 
         return img, lbl
 
@@ -70,7 +88,6 @@ def get_name_type(file_name: str) -> (str, str):
 def get_train_augs():
     return A.Compose(
         [
-            # A.ToGray(p=1.0),
             A.OneOf([
                 A.RandomRotate90(),
                 A.VerticalFlip(),
@@ -82,7 +99,6 @@ def get_train_augs():
 def get_test_augs():
     return A.Compose(
         [
-            # A.ToGray(p=1.0),
             A.OneOf([
                 A.RandomRotate90(),
                 A.VerticalFlip(),
@@ -115,60 +131,16 @@ def get_data(data_root_dir: pathlib.Path or str):
                         index=pd.Index([0])
                     )
                     data_df = pd.concat([data_df, file_data_df], axis=0, ignore_index=True)
+    # - Shuffle the lines
+    data_df = data_df.sample(frac=1).reset_index(drop=True)
+
     return data_df
 
 
-# - Hyperparameters
-# -- General
-DEBUG = False
-DEVICE = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-
-# -- Paths
-# DATA_PATH = pathlib.Path('C:/Users/Michael/Desktop/University/PhD/Projects/CancerDet/Cancer Dataset')  # Windows
-# DATA_PATH = pathlib.Path('/Users/mchlsdrv/Desktop/University/PhD/Projects/CancerDet/data')  # Mac
-DATA_PATH = pathlib.Path('/home/sidorov/projects/cancer_det/data')  # 4GPUs
-METADATA_FILE = DATA_PATH / 'Rambam clinical table 26.6.23.csv'
-OUTPUT_DIR = pathlib.Path('/media/oldrrtammyfs/Users/sidorov/CancerDet/output/image_filter')
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-
-# -- Architecture
-HEIGHT = 256
-WIDTH = 256
-CHANNELS = 3
-CLASSES = 1
-MODEL = get_resnet50(image_channels=CHANNELS, num_classes=CLASSES).to(DEVICE)
-
-# -- Training
-TRAIN_BATCH_SIZE = 64
-VAL_BATCH_SIZE = 16
-VAL_PROP = 0.2
-LEARNING_RATE = 0.001
-EPOCHS = 1500
-N_WORKERS = 4
-PIN_MEMORY = True
-
-OPTIMIZER = torch.optim.Adam(MODEL.parameters(), lr=LEARNING_RATE)
-LOSS_FUNC = nn.MSELoss()
-
-LOSS_PLOT_RESOLUTION = 10
-
 # - Main
-if __name__ == '__main__':
-    print(f'- Getting data')
-    train_data_frame = get_data(data_root_dir=DATA_PATH)
-
-    # - Split data into train / validation datasets
-    train_data_df, val_data_df = get_train_val_split(data_df=train_data_frame.loc[:1000, :], val_prop=VAL_PROP)
-
-    train_ds = DataSet(data_df=train_data_df, augs=get_train_augs())
-    val_ds = DataSet(data_df=val_data_df, augs=get_test_augs())
-
-    train_data_loader, val_data_loader = get_data_loaders(
-        train_dataset=train_ds,
-        train_batch_size=TRAIN_BATCH_SIZE,
-        val_dataset=val_ds,
-        val_batch_size=VAL_BATCH_SIZE,
-    )
+def train_model(model, epochs: int,
+                train_data_loader: torch.utils.data.DataLoader, val_data_loader: torch.utils.data.DataLoader,
+                save_dir: pathlib.Path or str):
 
     epoch_train_losses = np.array([])
     epoch_val_losses = np.array([])
@@ -177,8 +149,9 @@ if __name__ == '__main__':
     loss_plot_train_history = []
     loss_plot_val_history = []
     print(f'> Running on: ({DEVICE})')
+
     # - Training loop
-    for epch in tqdm(range(EPOCHS)):
+    for epch in tqdm(range(epochs)):
         # - Train
         btch_train_losses = np.array([])
         btch_val_losses = np.array([])
@@ -188,7 +161,7 @@ if __name__ == '__main__':
             lbls = lbls.to(DEVICE)
 
             # - Forward
-            preds = MODEL(imgs)
+            preds = model(imgs)
             loss = LOSS_FUNC(preds, lbls)
             btch_train_losses = np.append(btch_train_losses, loss.item())
 
@@ -232,9 +205,148 @@ if __name__ == '__main__':
             )
 
             # - Save model weights
-            checkpoint_dir = OUTPUT_DIR / 'checkpoints'
+            save_dir = pathlib.Path(save_dir)
+            checkpoint_dir = save_dir / 'checkpoints'
             os.makedirs(checkpoint_dir, exist_ok=True)
             save_checkpoint(model=MODEL, filename=checkpoint_dir / f'weights_epoch_{epch}.pth.tar', epoch=epch)
 
             loss_plot_start_idx += LOSS_PLOT_RESOLUTION
             loss_plot_end_idx += LOSS_PLOT_RESOLUTION
+
+    return model
+
+def filter_images(model, image_dir_path: pathlib.Path, save_dir: pathlib.Path, save_image_type: str = 'tif'):
+    image_dir_path = pathlib.Path(image_dir_path)
+    img_fls = os.listdir(image_dir_path)
+    for img_fl in tqdm(img_fls):
+
+        img = get_image(image_file=image_dir_path / img_fl, to_gray=TO_GRAY)
+
+        # - Add the batch dim
+        img = np.expand_dims(img, 0)
+
+        try:
+            img_tnsr = torch.tensor(img, dtype=torch.float, device=DEVICE)
+
+            img_tnsr = torch.permute(img_tnsr, (0, 3, 1, 2))
+
+            valid = model(img_tnsr).item()
+            img_name = img_fl[::-1]
+            img_name = img_name[img_name.index('.')+1:][::-1]
+
+            # - Create the output dirs
+            os.makedirs(save_dir, exist_ok=True)
+
+            valid_dir, invalid_dir = save_dir / 'valid', save_dir / 'invalid'
+            os.makedirs(valid_dir, exist_ok=True)
+            os.makedirs(invalid_dir, exist_ok=True)
+
+            save_file = f'{img_name}.{save_image_type}'
+            if valid > 0.5:
+                save_file = valid_dir / save_file
+            else:
+                save_file = invalid_dir / save_file
+
+            # - Reload the image
+            img = get_image(image_file=image_dir_path / img_fl, to_gray=False)
+            cv2.imwrite(str(save_file), img)
+        except Exception as err:
+            print(err)
+
+
+# - Hyperparameters
+# -- General
+# - Get the current timestamp to be used for the run differentiate the run
+TS = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+PARSER = get_arg_parser()
+ARGS = PARSER.parse_args()
+
+# - Hyperparameters
+# -- General
+DEBUG = ARGS.debug
+DEVICE = get_device(gpu_id=ARGS.gpu_id)
+
+# DEVICE = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+# -- Paths
+TRAIN_DATA_PATH = pathlib.Path('/home/sidorov/projects/cancer_det/data/filter_data')  # 4GPUs
+TEST_DATA_PATH = pathlib.Path('/home/sidorov/projects/cancer_det/data/train')  # 4GPUs
+if isinstance(ARGS.name, str):
+    OUTPUT_DIR = pathlib.Path(f'/media/oldrrtammyfs/Users/sidorov/CancerDet/output/image_filter/{ARGS.name}_{TS}')
+else:
+    OUTPUT_DIR = pathlib.Path(f'/media/oldrrtammyfs/Users/sidorov/CancerDet/output/image_filter/{TS}')
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+CHECKPOINT_FILE = pathlib.Path(
+    '/media/oldrrtammyfs/Users/sidorov/CancerDet/output/image_filter/checkpoints_mse/weights_epoch_149.pth.tar')
+
+# -- Architecture
+HEIGHT = 256
+WIDTH = 256
+CHANNELS = 3
+# CHANNELS = 1
+CLASSES = 1
+# CLASSES = 2
+MODEL = get_resnet50(image_channels=CHANNELS, num_classes=CLASSES).to(DEVICE)
+
+# -- Training
+# > Hyperparameters
+N_DATA_SAMPLES = 5000
+TRAIN_BATCH_SIZE = 32
+VAL_BATCH_SIZE = 16
+VAL_PROP = 0.2
+LEARNING_RATE = 0.001
+EPOCHS = 100
+TO_GRAY = True if CHANNELS == 1 else False
+N_WORKERS = 4
+PIN_MEMORY = True
+CHANNELS_FIRST = True
+
+# > Optimizer
+OPTIMIZER = torch.optim.Adam(MODEL.parameters(), lr=LEARNING_RATE)
+
+# > Loss
+BINARY_LABEL = False
+# BINARY_LABEL = True
+LOSS_FUNC = nn.CrossEntropyLoss() if BINARY_LABEL else nn.MSELoss()
+
+# > Plots
+LOSS_PLOT_RESOLUTION = 10
+
+
+if __name__ == '__main__':
+    if ARGS.load_weights and CHECKPOINT_FILE.is_file():
+        load_checkpoint(model=MODEL, checkpoint=CHECKPOINT_FILE)
+
+    if ARGS.train:
+        print(f'- Getting data')
+        train_data_frame = get_data(data_root_dir=TRAIN_DATA_PATH)
+
+        # - Split data into train / validation datasets
+        train_data_df, val_data_df = get_train_val_split(data_df=train_data_frame, val_prop=VAL_PROP)
+
+        train_ds = DataSet(data_df=train_data_df, augs=get_train_augs(), to_gray=TO_GRAY, binary_label=BINARY_LABEL,
+                           channels_first=CHANNELS_FIRST)
+
+        val_ds = DataSet(data_df=val_data_df, augs=get_test_augs(), to_gray=TO_GRAY, binary_label=BINARY_LABEL,
+                         channels_first=CHANNELS_FIRST)
+
+        train_dl, val_dl = get_data_loaders(
+            train_dataset=train_ds,
+            train_batch_size=TRAIN_BATCH_SIZE,
+            val_dataset=val_ds,
+            val_batch_size=VAL_BATCH_SIZE,
+        )
+        MODEL = train_model(
+            model=MODEL,
+            epochs=EPOCHS,
+            train_data_loader=train_dl,
+            val_data_loader=val_dl,
+            save_dir=OUTPUT_DIR
+        )
+
+    filter_images(
+        model=MODEL,
+        image_dir_path=TEST_DATA_PATH,
+        save_dir=OUTPUT_DIR / 'filtered',
+        save_image_type='tif'
+    )
