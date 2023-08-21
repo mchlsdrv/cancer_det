@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import albumentations as A
+import sklearn
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset
@@ -17,26 +18,97 @@ sys.path.append('/home/sidorov/dev')
 from ml.nn.cnn.architectures.ResNet import get_resnet50
 from ml.nn.utils.aux_funcs import (
     get_train_val_split,
-    get_data_loaders,
-    plot_loss,
     load_checkpoint,
-    save_checkpoint,
     get_arg_parser,
-    get_device
+    get_device, train, get_data_loaders_from_datasets
 )
 from python_utils.image_utils import get_image
 
 plt.style.use('ggplot')
+EPSILON = 1e-9
+BETA = 1.0
+
+TS = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+PARSER = get_arg_parser()
+ARGS = PARSER.parse_args()
+
+# - Hyperparameters
+# -- General
+DEBUG = ARGS.debug
+DEVICE = get_device(gpu_id=ARGS.gpu_id)
+# DEVICE = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+
+# -- Paths
+DATA_PATH_LOCAL_ROOT = pathlib.Path('/home/sidorov/projects/cancer_det/data')  # 4GPUs
+
+DATA_PATH_REMOTE = pathlib.Path(
+    '/media/oldrrtammyfs/Users/sidorov/CancerDet/output/image_filter/filtered/valid')  # 4GPUs
+
+# - Dataframe files
+TRAIN_DATA_FRAME = DATA_PATH_LOCAL_ROOT / 'train_data_frame.csv'
+TEST_DATA_FRAME = DATA_PATH_LOCAL_ROOT / 'test_data_frame.csv'
+
+METADATA_FILE = DATA_PATH_LOCAL_ROOT / 'Table.csv'
+if isinstance(ARGS.name, str):
+    OUTPUT_DIR = pathlib.Path(f'/media/oldrrtammyfs/Users/sidorov/CancerDet/output/{ARGS.name}_{TS}')
+else:
+    OUTPUT_DIR = pathlib.Path(f'/media/oldrrtammyfs/Users/sidorov/CancerDet/output/{TS}')
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+CHECKPOINT_FILE = pathlib.Path('/media/oldrrtammyfs/Users/sidorov/CancerDet/output/CELoss_train_test_no_act_2023-08-20_12-34-41/checkpoints/weights_epoch_99.pth.tar')
+
+# -- Architecture
+HEIGHT = 256
+WIDTH = 256
+CHANNELS = 1
+OUTPUT_SIZE = 2
+
+# -- Training
+# > Hyperparameters
+N_DATA_SAMPLES = 5000
+TRAIN_BATCH_SIZE = ARGS.batch_size
+VAL_BATCH_SIZE = TRAIN_BATCH_SIZE // 2
+LEARNING_RATE = ARGS.learning_rate
+EPOCHS = ARGS.epochs
+TO_RGB = True if CHANNELS == 3 else False
+TO_GRAY = True if CHANNELS == 1 else False
+VAL_PROP = 0.2
+N_WORKERS = 4
+PIN_MEMORY = True
+CHANNELS_FIRST = True
+
+# > Loss
+ONE_HOT_LABELS = True
+CLASSIFICATION_MODEL = True
+if CLASSIFICATION_MODEL:
+    LOSS_FUNC = nn.CrossEntropyLoss() if ONE_HOT_LABELS else nn.BCELoss()
+else:
+    LOSS_FUNC = nn.MSELoss()
+
+MODEL = get_resnet50(
+    image_channels=CHANNELS,
+    output_size=OUTPUT_SIZE,
+    prediction_layer=None if ONE_HOT_LABELS else nn.Sigmoid(),
+).to(DEVICE)
+
+# > Optimizer
+OPTIMIZER = torch.optim.Adam(MODEL.parameters(), lr=LEARNING_RATE)
+
+
+# > Plots
+LOSS_PLOT_RESOLUTION = 10
+
+# -- Test
+POSITIVE_THRESHOLD = 0.5
 
 
 class DataSet(Dataset):
-    def __init__(self, data_df: pd.DataFrame, augs: A.Compose, to_gray: bool, binary_label: bool = False,
-                 channels_first: bool = False):
+    def __init__(self, data_df: pd.DataFrame, augs: A.Compose, to_gray: bool,
+                 classification_model: bool = True, channels_first: bool = False):
         self.data_df = data_df
         self.augs = augs
         self.random_crop = A.RandomCrop(height=HEIGHT, width=WIDTH, p=1.0)
         self.to_gray = to_gray
-        self.binary_label = binary_label
+        self.classification_model = classification_model
         self.channels_first = channels_first
 
     def __len__(self):
@@ -52,18 +124,25 @@ class DataSet(Dataset):
         img = get_image(image_file=img_fl, to_gray=self.to_gray)
 
         # - Get the label
-        if self.binary_label:
-            if rspns > 0:
-                lbl = np.array([1., 0.])
-            else:
-                lbl = np.array([0., 1.])
+        if self.classification_model:
+            # # - Use one-hot labels
+            # if self.one_hot_labels:
+            #     if rspns > 0:
+            #         lbl = np.array([1., 0.])
+            #     else:
+            #         lbl = np.array([0., 1.])
+            # # - Use continuous label in 0 or 1
+            # else:
+            lbl = rspns
+            # lbl = np.array([rspns])
+        # - Use continuous labels representing the values for regression model
         else:
             lbl = np.array([pdl1, pdl2])
 
         # - Run regular augmentations on the cropped / rescaled image
         img = self.augs(image=img, mask=img).get('image')
 
-        img, lbl = torch.tensor(img, dtype=torch.float), torch.tensor(lbl, dtype=torch.float)
+        img, lbl = torch.tensor(img, dtype=torch.float), torch.tensor(lbl, dtype=torch.long)
 
         if self.channels_first:
             img = torch.permute(img, (2, 0, 1))  # Add channels dim before width and height
@@ -110,7 +189,7 @@ def get_test_augs():
         ], p=1.0)
 
 
-def get_data(data_root_dir: pathlib.Path or str, metadata_file: pathlib.Path or str, save_file: pathlib.Path or str):
+def get_data_from_dir(data_root_dir: pathlib.Path or str, metadata_file: pathlib.Path or str, save_file: pathlib.Path or str):
     metadata_df = pd.read_csv(metadata_file)
     lbls_df = metadata_df.loc[7:35, ['Path number', 'PD1 score', 'PDL1 score', 'PDL2 score', 'Response binary']]
 
@@ -153,168 +232,116 @@ def get_data(data_root_dir: pathlib.Path or str, metadata_file: pathlib.Path or 
     return data_df
 
 
-TS = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-PARSER = get_arg_parser()
-ARGS = PARSER.parse_args()
-
-# - Hyperparameters
-# -- General
-DEBUG = ARGS.debug
-DEVICE = get_device(gpu_id=ARGS.gpu_id)
-# DEVICE = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-
-# -- Paths
-# DATA_PATH = pathlib.Path('C:/Users/Michael/Desktop/University/PhD/Projects/CancerDet/Cancer Dataset')  # Windows
-# DATA_PATH = pathlib.Path('/Users/mchlsdrv/Desktop/University/PhD/Projects/CancerDet/data')  # Mac
-DATA_PATH = pathlib.Path('/home/sidorov/projects/cancer_det/data')  # 4GPUs
-TRAIN_DATA_PATH = pathlib.Path(
-    '/media/oldrrtammyfs/Users/sidorov/CancerDet/output/image_filter/filtered/valid')  # 4GPUs
-# TRAIN_DATA_PATH = DATA_PATH / 'train'
-TRAIN_DATA_DF_PATH = DATA_PATH / 'train_data_df.csv'
-METADATA_FILE = DATA_PATH / 'Table.csv'
-if isinstance(ARGS.name, str):
-    OUTPUT_DIR = pathlib.Path(f'/media/oldrrtammyfs/Users/sidorov/CancerDet/output/{ARGS.name}_{TS}')
-else:
-    OUTPUT_DIR = pathlib.Path(f'/media/oldrrtammyfs/Users/sidorov/CancerDet/output/{TS}')
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-CHECKPOINT_FILE = pathlib.Path(
-    '/media/oldrrtammyfs/Users/sidorov/CancerDet/output/checkpoints/weights_epoch_99.pth.tar')
-
-# -- Architecture
-HEIGHT = 256
-WIDTH = 256
-CHANNELS = 1
-CLASSES = 2
-MODEL = get_resnet50(image_channels=CHANNELS, num_classes=CLASSES).to(DEVICE)
-
-# -- Training
-# > Hyperparameters
-N_DATA_SAMPLES = 5000
-TRAIN_BATCH_SIZE = 32
-VAL_BATCH_SIZE = 16
-VAL_PROP = 0.2
-LEARNING_RATE = 0.001
-EPOCHS = 100
-TO_RGB = True if CHANNELS == 3 else False
-TO_GRAY = True if CHANNELS == 1 else False
-N_WORKERS = 4
-PIN_MEMORY = True
-CHANNELS_FIRST = True
-
-# > Optimizer
-OPTIMIZER = torch.optim.Adam(MODEL.parameters(), lr=LEARNING_RATE)
-
-# > Loss
-BINARY_LABEL = True
-LOSS_FUNC = nn.CrossEntropyLoss() if BINARY_LABEL else nn.MSELoss()
-
-# > Plots
-LOSS_PLOT_RESOLUTION = 10
-
 # - Main
-if __name__ == '__main__':
-    if ARGS.load_weights and CHECKPOINT_FILE.is_file():
-        load_checkpoint(MODEL, CHECKPOINT_FILE)
-    if ARGS.train:
-        print(f'- Getting data')
-        if not TRAIN_DATA_DF_PATH.is_file():
-            train_df = get_data(data_root_dir=TRAIN_DATA_PATH, metadata_file=METADATA_FILE,
-                                save_file=TRAIN_DATA_DF_PATH)
-        else:
-            train_df = pd.read_csv(TRAIN_DATA_DF_PATH)
+def get_data_loaders():
+    print(f'- Getting data')
+    if not TRAIN_DATA_FRAME.is_file():
+        train_df = get_data_from_dir(
+            data_root_dir=DATA_PATH_REMOTE,
+            metadata_file=METADATA_FILE,
+            save_file=TRAIN_DATA_FRAME
+        )
+    else:
+        train_df = pd.read_csv(TRAIN_DATA_FRAME)
 
-        # - Shuffle the lines
-        train_df = train_df.sample(frac=1).reset_index(drop=True)
+    # - Shuffle the lines
+    train_df = train_df.sample(frac=1).reset_index(drop=True)
 
-        # - Split data into train / validation datasets
-        # train_df, val_df = get_train_val_split(data_df=train_df, val_prop=VAL_PROP)
-        train_df, val_df = get_train_val_split(data_df=train_df.loc[:N_DATA_SAMPLES, :], val_prop=VAL_PROP)
-        print(f'''
-        - Training on {len(train_df)} samples
-        - Validating on {len(val_df)} samples
-        ''')
+    # - Split data into train / validation datasets
+    # train_df, val_df = get_train_val_split(data_df=train_df, val_prop=VAL_PROP)
+    train_df, val_df = get_train_val_split(data_df=train_df.loc[:N_DATA_SAMPLES, :], val_prop=VAL_PROP)
+    print(f'''
+    - Training on {len(train_df)} samples
+    - Validating on {len(val_df)} samples
+    ''')
 
-        train_ds = DataSet(data_df=train_df, augs=get_train_augs(),
-                           to_gray=TO_GRAY,
-                           binary_label=BINARY_LABEL,
-                           channels_first=CHANNELS_FIRST)
-        val_ds = DataSet(data_df=val_df, augs=get_test_augs(),
-                         to_gray=TO_GRAY,
-                         binary_label=BINARY_LABEL,
-                         channels_first=CHANNELS_FIRST)
+    train_ds = DataSet(
+        data_df=train_df,
+        augs=get_train_augs(),
+        to_gray=TO_GRAY,
+        classification_model=CLASSIFICATION_MODEL,
+        channels_first=CHANNELS_FIRST
+    )
 
-        train_data_loader, val_data_loader = get_data_loaders(
-            train_dataset=train_ds,
-            train_batch_size=TRAIN_BATCH_SIZE,
-            val_dataset=val_ds,
-            val_batch_size=VAL_BATCH_SIZE,
+    val_ds = DataSet(
+        data_df=val_df,
+        augs=get_test_augs(),
+        to_gray=TO_GRAY,
+        classification_model=CLASSIFICATION_MODEL,
+        channels_first=CHANNELS_FIRST
+    )
+
+    train_data_loader, val_data_loader = get_data_loaders_from_datasets(
+        train_dataset=train_ds,
+        train_batch_size=TRAIN_BATCH_SIZE,
+        val_dataset=val_ds,
+        val_batch_size=VAL_BATCH_SIZE,
+    )
+    return train_data_loader, val_data_loader
+
+
+def predict(image_files):
+    """
+    Returns a 1D vector of length len(images) with float values representing the scores in range [0., 1.] for each image
+    :param image_files: Images to be predicted
+    :return: Predictions (1D float vector)
+    """
+    # MODEL.eval()
+    preds = []
+    for img_fl in tqdm(image_files):
+        img = get_image(
+            image_file=img_fl,
+            to_gray=True,
+            to_tensor=True,
+            channel_first=True,
+            add_batch_dim=True,
+            device=DEVICE
         )
 
-        epoch_train_losses = np.array([])
-        epoch_val_losses = np.array([])
+        cls_probs = MODEL(img)
+        _, pred = torch.max(cls_probs, 1)  # returns (values, indices), but as our class is the same as the index,
+        # we may ignore the raw value
 
-        loss_plot_start_idx, loss_plot_end_idx = 0, LOSS_PLOT_RESOLUTION
-        loss_plot_train_history = []
-        loss_plot_val_history = []
+        # - Append the label to the labels
+        preds.append(pred.item())
 
-        # - Training loop
-        for epch in tqdm(range(EPOCHS)):
-            # - Train
-            btch_train_losses = np.array([])
-            btch_val_losses = np.array([])
-            for btch_idx, (imgs, lbls) in enumerate(train_data_loader):
-                # - Store the data in CUDA
-                imgs = imgs.to(DEVICE)
-                lbls = lbls.to(DEVICE)
+    return np.array(preds)
 
-                # - Forward
-                preds = MODEL(imgs)
-                loss = LOSS_FUNC(preds, lbls)
-                btch_train_losses = np.append(btch_train_losses, loss.item())
 
-                # - Backward
-                OPTIMIZER.zero_grad()
-                loss.backward()
+def test():
+    test_df = pd.read_csv(TEST_DATA_FRAME)
+    image_files, labels = test_df.loc[:, 'path'].values, test_df.loc[:, 'response'].values
+    preds = predict(image_files=image_files)
 
-                # - Optimizer step
-                OPTIMIZER.step()
+    prcsn, rcll, f1_scr, _ = sklearn.metrics.precision_recall_fscore_support(preds, labels, beta=BETA, average='binary')
 
-            # - Validation
-            with torch.no_grad():
-                for btch_idx, (imgs, lbls) in enumerate(val_data_loader):
-                    imgs = imgs.to(DEVICE)
-                    lbls = lbls.to(DEVICE)
+    plt.style.use('default')
+    conf_mat = sklearn.metrics.confusion_matrix(preds, labels) / len(image_files)
+    conf_mat_disp = sklearn.metrics.ConfusionMatrixDisplay(confusion_matrix=conf_mat)
+    conf_mat_disp.plot()
 
-                    preds = MODEL(imgs)
-                    loss = LOSS_FUNC(preds, lbls)
+    return prcsn, rcll, f1_scr, conf_mat_disp.figure_
 
-                    btch_val_losses = np.append(btch_val_losses, loss.item())
 
-            epoch_train_losses = np.append(epoch_train_losses, btch_train_losses.mean())
-            epoch_val_losses = np.append(epoch_val_losses, btch_val_losses.mean())
+if __name__ == '__main__':
+    if (
+            ARGS.test or
+            ARGS.infer or
+            (ARGS.train and ARGS.load_weights and CHECKPOINT_FILE.is_file())
+    ):
+        load_checkpoint(MODEL, CHECKPOINT_FILE)
 
-            if len(epoch_train_losses) >= loss_plot_end_idx and len(epoch_val_losses) >= loss_plot_end_idx:
-                # - Add the mean history
-                loss_plot_train_history.append(epoch_train_losses[loss_plot_start_idx:loss_plot_end_idx].mean())
-                loss_plot_val_history.append(epoch_val_losses[loss_plot_start_idx:loss_plot_end_idx].mean())
+    if ARGS.train:
+        train_dl, val_dl = get_data_loaders()
+        train(model=MODEL, train_data_loader=train_dl, val_data_loader=val_dl, optimizer=OPTIMIZER, loss_func=LOSS_FUNC,
+              epochs=EPOCHS, device=DEVICE, output_dir=OUTPUT_DIR)
 
-                # - Plot the mean history
-                plot_loss(
-                    train_losses=loss_plot_train_history,
-                    val_losses=loss_plot_val_history,
-                    x_ticks=np.arange(1, (epch + 1) // LOSS_PLOT_RESOLUTION + 1) * LOSS_PLOT_RESOLUTION,
-                    x_label='Epochs',
-                    y_label='MSE',
-                    title='Train vs Validation Plot',
-                    train_loss_marker='b-', val_loss_marker='r-',
-                    train_loss_label='train', val_loss_label='val',
-                    output_dir=OUTPUT_DIR
-                )
+    precision, recall, f1_score, conf_mat_fig = test()
 
-                # - Save model weights
-                checkpoint_dir = OUTPUT_DIR / 'checkpoints'
-                os.makedirs(checkpoint_dir, exist_ok=True)
-                save_checkpoint(model=MODEL, filename=checkpoint_dir / f'weights_epoch_{epch}.pth.tar', epoch=epch)
+    print(f'''
+    TEST RESULTS:
+        - Precision (TP / (TP + FP)): {precision:.3f}
+        - Recall (TP / (TP + FN)): {recall:.3f}
+        - F1 Score (2 * (Precision * Recall) / (Precision + Recall)): {f1_score:.3f}
+    ''')
 
-                loss_plot_start_idx += LOSS_PLOT_RESOLUTION
-                loss_plot_end_idx += LOSS_PLOT_RESOLUTION
