@@ -25,6 +25,8 @@ from ml.nn.utils.aux_funcs import (
 from python_utils.image_utils import get_image
 
 plt.style.use('ggplot')
+
+# - Constants
 EPSILON = 1e-9
 BETA = 1.0
 
@@ -54,17 +56,19 @@ if isinstance(ARGS.name, str):
 else:
     OUTPUT_DIR = pathlib.Path(f'/media/oldrrtammyfs/Users/sidorov/CancerDet/output/{TS}')
 os.makedirs(OUTPUT_DIR, exist_ok=True)
-CHECKPOINT_FILE = pathlib.Path('/media/oldrrtammyfs/Users/sidorov/CancerDet/output/CELoss_train_test_no_act_2023-08-20_12-34-41/checkpoints/weights_epoch_99.pth.tar')
-
+CHECKPOINT_FILE = '/media/oldrrtammyfs/Users/sidorov/CancerDet/output/CELoss_train_no_stoch_depth_gray_50k_2023-08-25_07-46-10/checkpoints/weights_epoch_49.pth.tar'
+# CHECKPOINT_FILE = '/media/oldrrtammyfs/Users/sidorov/CancerDet/output/CELoss_train_test_stoch_depth_rgb_2023-08-23_07-22-36/checkpoints/weights_epoch_99.pth.tar'
 # -- Architecture
 HEIGHT = 256
 WIDTH = 256
+# CHANNELS = 3
 CHANNELS = 1
 OUTPUT_SIZE = 2
 
 # -- Training
 # > Hyperparameters
-N_DATA_SAMPLES = 5000
+# N_DATA_SAMPLES = 50000
+N_DATA_SAMPLES = -1
 TRAIN_BATCH_SIZE = ARGS.batch_size
 VAL_BATCH_SIZE = TRAIN_BATCH_SIZE // 2
 LEARNING_RATE = ARGS.learning_rate
@@ -96,9 +100,6 @@ OPTIMIZER = torch.optim.Adam(MODEL.parameters(), lr=LEARNING_RATE)
 
 # > Plots
 LOSS_PLOT_RESOLUTION = 10
-
-# -- Test
-POSITIVE_THRESHOLD = 0.5
 
 
 class DataSet(Dataset):
@@ -248,8 +249,10 @@ def get_data_loaders():
     train_df = train_df.sample(frac=1).reset_index(drop=True)
 
     # - Split data into train / validation datasets
-    # train_df, val_df = get_train_val_split(data_df=train_df, val_prop=VAL_PROP)
-    train_df, val_df = get_train_val_split(data_df=train_df.loc[:N_DATA_SAMPLES, :], val_prop=VAL_PROP)
+    if N_DATA_SAMPLES > 0:
+        train_df, val_df = get_train_val_split(data_df=train_df.loc[:N_DATA_SAMPLES, :], val_prop=VAL_PROP)
+    else:
+        train_df, val_df = get_train_val_split(data_df=train_df, val_prop=VAL_PROP)
     print(f'''
     - Training on {len(train_df)} samples
     - Validating on {len(val_df)} samples
@@ -286,12 +289,13 @@ def predict(image_files):
     :param image_files: Images to be predicted
     :return: Predictions (1D float vector)
     """
-    # MODEL.eval()
+    # - Put the model in evaluation mode
+    MODEL.eval()
     preds = []
     for img_fl in tqdm(image_files):
         img = get_image(
             image_file=img_fl,
-            to_gray=True,
+            to_gray=TO_GRAY,
             to_tensor=True,
             channel_first=True,
             add_batch_dim=True,
@@ -304,6 +308,9 @@ def predict(image_files):
 
         # - Append the label to the labels
         preds.append(pred.item())
+
+    # - Put the model back in train mode
+    MODEL.train()
 
     return np.array(preds)
 
@@ -324,6 +331,7 @@ def test():
 
 
 if __name__ == '__main__':
+    CHECKPOINT_FILE = pathlib.Path(CHECKPOINT_FILE)
     if (
             ARGS.test or
             ARGS.infer or
@@ -344,4 +352,10 @@ if __name__ == '__main__':
         - Recall (TP / (TP + FN)): {recall:.3f}
         - F1 Score (2 * (Precision * Recall) / (Precision + Recall)): {f1_score:.3f}
     ''')
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    plot_output_dir = OUTPUT_DIR / 'plots'
+    os.makedirs(plot_output_dir, exist_ok=True)
+    conf_mat_fig.savefig(plot_output_dir / 'confusion matrix.png')
+    plt.close(conf_mat_fig)
+
 
