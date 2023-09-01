@@ -58,7 +58,8 @@ if isinstance(ARGS.name, str):
 else:
     OUTPUT_DIR = pathlib.Path(f'/media/oldrrtammyfs/Users/sidorov/CancerDet/output/{TS}')
 os.makedirs(OUTPUT_DIR, exist_ok=True)
-CHECKPOINT_FILE = '/media/oldrrtammyfs/Users/sidorov/CancerDet/output/MSELoss_train_test_all_data_reg_db_2023-08-30_12-40-28/checkpoints/weights_epoch_99.pth.tar'
+CHECKPOINT_FILE = '/media/oldrrtammyfs/Users/sidorov/CancerDet/output/MSELoss_test_all_data_reg_pd1_do_2023-09-01_11-08-25/checkpoints/weights_last_epoch.pth.tar'
+# CHECKPOINT_FILE = '/media/oldrrtammyfs/Users/sidorov/CancerDet/output/MSELoss_train_test_all_data_reg_db_2023-08-30_12-40-28/checkpoints/weights_epoch_99.pth.tar'
 # CHECKPOINT_FILE = '/media/oldrrtammyfs/Users/sidorov/CancerDet/output/MSELoss_train_all_data_cont_2023-08-28_13-56-46/checkpoints/weights_epoch_99.pth.tar'
 # CHECKPOINT_FILE = '/media/oldrrtammyfs/Users/sidorov/CancerDet/output/CELoss_train_no_stoch_depth_gray_all_data_2023-08-25_23-27-22/checkpoints/weights_epoch_89.pth.tar'
 # CHECKPOINT_FILE = '/media/oldrrtammyfs/Users/sidorov/CancerDet/output/CELoss_train_no_stoch_depth_gray_50k_2023-08-25_07-46-10/checkpoints/weights_epoch_49.pth.tar'

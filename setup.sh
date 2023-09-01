@@ -31,4 +31,20 @@ echo Saving the path $PATH to \'$HOME/.bashrc...
 echo export PATH="$PATH" >> $HOME/.bashrc
 
 cd $HOME/projects/cancer_det
+
+echo Creating a conda environment \'cancer_det\' ...
+conda create --name cancer_det --python=3.9
+
+echo Activating environment \'cancer_det\' ...
+conda activate cancer_det
+
+echo Installing \'requirements.txt\' ...
+pip install -r requirements.txt
+
+echo Installing \'Albumentations\' module ...
+pip install -U albumentations
+
+echo Install \'pytorch\' ...
+pip3 install torch torchvision torchaudio
+
 echo Done !
