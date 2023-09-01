@@ -28,7 +28,7 @@ export PATH="$HOME/dev/python_utils:$PATH"
 echo * New path: \'$PATH\'
 
 echo Saving the path $PATH to \'$HOME/.bashrc...
-echo export PATH="$PATH" >> ~/.bashrc
+echo export PATH="$PATH" >> $HOME/.bashrc
 
 cd $HOME/projects/cancer_det
 echo Done !
