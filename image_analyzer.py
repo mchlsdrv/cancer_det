@@ -24,20 +24,6 @@ low_sig_img_lbl = ['low signal'] * len(ls_img_flt)
 high_sig_img_lbl = ['high signal'] * len(hs_img_flt)
 lbls = low_sig_img_lbl + high_sig_img_lbl
 img_df = pd.DataFrame(dict(img_intensity=imgs, img=lbls))
-# hs_dist_plt = sns.displot(img_df, x='img_intensity', hue='img', kind='kde', ax=)
-# plt.show()
-#
-# img_df = pd.DataFrame(dict(img_intensity=np.reshape(ls_img, -1) + np.reshape(hs_img, -1)))
-# ls_dist_plt = sns.displot(img_df, x='low_signal_img', kind='kde')
-# plt.show()
-# plt.close()
-# hs_dist_plt = sns.displot(img_df, x='low_signal_img', kind='kde')
-# plt.show()
-
-# bins = np.arange(0, 261, 10)
-# ls_img_intensity_dist, _ = np.histogram(ls_img, bins=bins, density=True)
-# hs_img_intensity_dist, _ = np.histogram(hs_img, bins=bins, density=True)
-
 fig, ax = plt.subplots(figsize=(8, 8))
 
 ax1 = plt.subplot2grid((4, 4), (0, 0), colspan=1)
@@ -52,9 +38,3 @@ ax2.set(title='Low Signal Image')
 
 sns.displot(img_df, x='img_intensity', hue='img', kind='kde', ax=ax3)
 plt.show()
-
-# plt.show()
-
-print()
-
-
