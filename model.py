@@ -58,7 +58,8 @@ if isinstance(ARGS.name, str):
 else:
     OUTPUT_DIR = pathlib.Path(f'/media/oldrrtammyfs/Users/sidorov/CancerDet/output/{TS}')
 os.makedirs(OUTPUT_DIR, exist_ok=True)
-CHECKPOINT_FILE = '/media/oldrrtammyfs/Users/sidorov/CancerDet/output/MSELoss_train_all_data_cont_2023-08-28_13-56-46/checkpoints/weights_epoch_99.pth.tar'
+CHECKPOINT_FILE = '/media/oldrrtammyfs/Users/sidorov/CancerDet/output/MSELoss_train_test_all_data_reg_db_2023-08-30_12-40-28/checkpoints/weights_epoch_99.pth.tar'
+# CHECKPOINT_FILE = '/media/oldrrtammyfs/Users/sidorov/CancerDet/output/MSELoss_train_all_data_cont_2023-08-28_13-56-46/checkpoints/weights_epoch_99.pth.tar'
 # CHECKPOINT_FILE = '/media/oldrrtammyfs/Users/sidorov/CancerDet/output/CELoss_train_no_stoch_depth_gray_all_data_2023-08-25_23-27-22/checkpoints/weights_epoch_89.pth.tar'
 # CHECKPOINT_FILE = '/media/oldrrtammyfs/Users/sidorov/CancerDet/output/CELoss_train_no_stoch_depth_gray_50k_2023-08-25_07-46-10/checkpoints/weights_epoch_49.pth.tar'
 # -- Architecture
@@ -66,7 +67,8 @@ HEIGHT = 256
 WIDTH = 256
 # CHANNELS = 3
 CHANNELS = 3 if ARGS.rgb else 1
-OUTPUT_SIZE = 2
+OUTPUT_SIZE = 1
+# OUTPUT_SIZE = 2
 
 # -- Training
 # > Hyperparameters
@@ -113,8 +115,9 @@ LOSS_PLOT_RESOLUTION = 10
 
 class DataSet(Dataset):
     def __init__(self, data_df: pd.DataFrame, augs: A.Compose, to_gray: bool,
-                 model_type: str, channels_first: bool = False):
+                 model_type: str, label_length: int = 2, channels_first: bool = False):
         self.data_df = data_df
+        self.label_length = label_length
         self.augs = augs
         self.random_crop = A.RandomCrop(height=HEIGHT, width=WIDTH, p=1.0)
         self.to_gray = to_gray
@@ -126,8 +129,8 @@ class DataSet(Dataset):
 
     def __getitem__(self, index):
         # - Get the data of the current sample
-        img_fl, pdl1, pdl2, rspns = self.data_df.loc[
-            index, ['path', 'pdl1', 'pdl2', 'response']
+        img_fl, pd1, pdl1, pdl2, rspns = self.data_df.loc[
+            index, ['path', 'pd1', 'pdl1', 'pdl2', 'response']
         ].values.flatten()
 
         # - Get the image
@@ -136,7 +139,10 @@ class DataSet(Dataset):
         # - Get the label
         # - Use continuous labels representing the values for regression model
         if self.model_type == 'reg':
-            lbl = torch.tensor(np.array([pdl1, pdl2]), dtype=torch.float)
+            if self.label_length == 1:
+                lbl = torch.tensor([pd1], dtype=torch.float)
+            else:
+                lbl = torch.tensor(np.array([pdl1, pdl2]), dtype=torch.float)
         else:
             lbl = torch.tensor(np.array(rspns), dtype=torch.long)
 
@@ -265,6 +271,7 @@ def get_data_loaders():
         augs=get_train_augs(),
         to_gray=TO_GRAY,
         model_type=ARGS.model_type,
+        label_length=OUTPUT_SIZE,
         channels_first=CHANNELS_FIRST
     )
 
@@ -273,6 +280,7 @@ def get_data_loaders():
         augs=get_test_augs(),
         to_gray=TO_GRAY,
         model_type=ARGS.model_type,
+        label_length=OUTPUT_SIZE,
         channels_first=CHANNELS_FIRST
     )
 
@@ -407,11 +415,7 @@ def test_continuous_label():
 
 if __name__ == '__main__':
     CHECKPOINT_FILE = pathlib.Path(CHECKPOINT_FILE)
-    if (
-            ARGS.test or
-            ARGS.infer or
-            (ARGS.train and ARGS.load_weights and CHECKPOINT_FILE.is_file())
-    ):
+    if ARGS.test or ARGS.infer or (ARGS.load_weights and CHECKPOINT_FILE.is_file()):
         load_checkpoint(MODEL, CHECKPOINT_FILE)
 
     if ARGS.train:
@@ -419,23 +423,22 @@ if __name__ == '__main__':
         train(model=MODEL, train_data_loader=train_dl, val_data_loader=val_dl, optimizer=OPTIMIZER, loss_func=LOSS_FUNC,
               epochs=EPOCHS, device=DEVICE, output_dir=OUTPUT_DIR)
 
-    elif ARGS.test:
-        if CLASSIFICATION_MODEL:
-            precision, recall, f1_score, conf_mat_fig = test_binary_classification()
+    if CLASSIFICATION_MODEL:
+        precision, recall, f1_score, conf_mat_fig = test_binary_classification()
 
-            print(f'''
-            TEST RESULTS:
-                - Precision (TP / (TP + FP)): {precision:.3f}
-                - Recall (TP / (TP + FN)): {recall:.3f}
-                - F1 Score (2 * (Precision * Recall) / (Precision + Recall)): {f1_score:.3f}
-            ''')
-            plot_output_dir = OUTPUT_DIR / 'plots'
-            os.makedirs(plot_output_dir, exist_ok=True)
-            conf_mat_fig.savefig(plot_output_dir / 'confusion matrix.png')
-            plt.close(conf_mat_fig)
-        elif REGRESSION_MODEL:
-            scatter_fig = test_continuous_label()
-            plot_output_dir = OUTPUT_DIR / 'plots'
-            os.makedirs(plot_output_dir, exist_ok=True)
-            scatter_fig.savefig(plot_output_dir / 'scatter plot.png')
-            plt.close(scatter_fig)
+        print(f'''
+        TEST RESULTS:
+            - Precision (TP / (TP + FP)): {precision:.3f}
+            - Recall (TP / (TP + FN)): {recall:.3f}
+            - F1 Score (2 * (Precision * Recall) / (Precision + Recall)): {f1_score:.3f}
+        ''')
+        plot_output_dir = OUTPUT_DIR / 'plots'
+        os.makedirs(plot_output_dir, exist_ok=True)
+        conf_mat_fig.savefig(plot_output_dir / 'confusion matrix.png')
+        plt.close(conf_mat_fig)
+    elif REGRESSION_MODEL:
+        scatter_fig = test_continuous_label()
+        plot_output_dir = OUTPUT_DIR / 'plots'
+        os.makedirs(plot_output_dir, exist_ok=True)
+        scatter_fig.savefig(plot_output_dir / 'scatter plot.png')
+        plt.close(scatter_fig)
