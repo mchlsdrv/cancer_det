@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import albumentations as A
+from albumentations.augmentations.dropout import CoarseDropout
 import sklearn
 import torch
 import torch.nn as nn
@@ -43,10 +44,10 @@ DEVICE = get_device(gpu_id=ARGS.gpu_id)
 # DEVICE = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
 # -- Paths
-DATA_PATH_LOCAL_ROOT = pathlib.Path('/home/sidorov/projects/cancer_det/data')  # 4GPUs
+DATA_PATH_LOCAL_ROOT = pathlib.Path('/home/sidorov/projects/cancer_det/data')
 
 DATA_PATH_REMOTE = pathlib.Path(
-    '/media/oldrrtammyfs/Users/sidorov/CancerDet/output/image_filter/filtered/valid')  # 4GPUs
+    '/media/oldrrtammyfs/Users/sidorov/CancerDet/output/image_filter/filtered/valid')
 
 # - Dataframe files
 TRAIN_DATA_FRAME = DATA_PATH_LOCAL_ROOT / 'train_data_frame.csv'
@@ -58,7 +59,7 @@ if isinstance(ARGS.name, str):
 else:
     OUTPUT_DIR = pathlib.Path(f'/media/oldrrtammyfs/Users/sidorov/CancerDet/output/{TS}')
 os.makedirs(OUTPUT_DIR, exist_ok=True)
-CHECKPOINT_FILE = '/media/oldrrtammyfs/Users/sidorov/CancerDet/output/MSELoss_test_all_data_reg_pd1_do_2023-09-01_11-08-25/checkpoints/weights_last_epoch.pth.tar'
+CHECKPOINT_FILE = '/media/oldrrtammyfs/Users/sidorov/CancerDet/output/MSELoss_train_reg_pd1_do_2023-09-01_16-09-50/checkpoints/weights_epoch_59.pth.tar'
 # CHECKPOINT_FILE = '/media/oldrrtammyfs/Users/sidorov/CancerDet/output/MSELoss_train_test_all_data_reg_db_2023-08-30_12-40-28/checkpoints/weights_epoch_99.pth.tar'
 # CHECKPOINT_FILE = '/media/oldrrtammyfs/Users/sidorov/CancerDet/output/MSELoss_train_all_data_cont_2023-08-28_13-56-46/checkpoints/weights_epoch_99.pth.tar'
 # CHECKPOINT_FILE = '/media/oldrrtammyfs/Users/sidorov/CancerDet/output/CELoss_train_no_stoch_depth_gray_all_data_2023-08-25_23-27-22/checkpoints/weights_epoch_89.pth.tar'
@@ -66,15 +67,12 @@ CHECKPOINT_FILE = '/media/oldrrtammyfs/Users/sidorov/CancerDet/output/MSELoss_te
 # -- Architecture
 HEIGHT = 256
 WIDTH = 256
-# CHANNELS = 3
 CHANNELS = 3 if ARGS.rgb else 1
-OUTPUT_SIZE = 1
-# OUTPUT_SIZE = 2
+OUTPUT_SIZE = ARGS.out_size
 
 # -- Training
 # > Hyperparameters
-# N_DATA_SAMPLES = 50000
-N_DATA_SAMPLES = -1
+N_DATA_SAMPLES = ARGS.n_samples
 TRAIN_BATCH_SIZE = ARGS.batch_size
 VAL_BATCH_SIZE = TRAIN_BATCH_SIZE // 2
 LEARNING_RATE = ARGS.learning_rate
@@ -183,6 +181,7 @@ def get_train_augs():
                 A.RandomRotate90(),
                 A.VerticalFlip(),
                 A.HorizontalFlip(),
+                CoarseDropout(max_holes=8)
             ], p=0.5),
         ], p=1.0)
 
@@ -194,6 +193,7 @@ def get_test_augs():
                 A.RandomRotate90(),
                 A.VerticalFlip(),
                 A.HorizontalFlip(),
+                CoarseDropout(max_holes=8)
             ], p=0.5),
         ], p=1.0)
 
@@ -388,28 +388,47 @@ def test_binary_classification():
 # noinspection PyShadowingNames
 def test_continuous_label():
     test_df = pd.read_csv(TEST_DATA_FRAME)
-    image_files, labels_pdl1, labels_pdl2 = test_df.loc[:, 'path'].values, test_df.loc[:, 'pdl1'].values, test_df.loc[:, 'pdl2'].values
+    image_files = test_df.loc[:, 'path'].values
     preds, imgs, img_nms = predict_label(image_files=image_files, continuous=True)
-    preds_pdl1, preds_pdl2 = preds[:, 0], preds[:, 1]
 
     print(f'- Testing {len(image_files)} images')
-    # - Monitor the large error samples
-    if DEBUG:
-        # - PDL1 errors
-        pdl1_sq_errs = np.sqrt(preds_pdl1 - labels_pdl1)
-        large_errs_idxs = np.argwhere(pdl1_sq_errs > ERROR_THRESHOLD).flatten()
-        err_imgs = imgs[large_errs_idxs]
-        err_img_nms = img_nms[large_errs_idxs]
-        save_images(err_imgs, image_names=err_img_nms, squared_errors=pdl1_sq_errs, save_dir=OUTPUT_DIR / 'pdl1_errors')
+    # - If we're predicting label with a single value, i.e., PD1
+    if preds.shape[1] == 1:
+        labels_pd1 = test_df.loc[:, 'pd1'].values
+        preds_pd1 = preds[:, 0]
 
-        # - PDL2 errors
-        pdl2_sq_errs = np.sqrt(preds_pdl2 - labels_pdl2)
-        large_errs_idxs = np.argwhere(pdl2_sq_errs > ERROR_THRESHOLD).flatten()
-        err_imgs = imgs[large_errs_idxs]
-        err_img_nms = img_nms[large_errs_idxs]
-        save_images(err_imgs, image_names=err_img_nms, squared_errors=pdl2_sq_errs, save_dir=OUTPUT_DIR / 'pdl2_errors')
+        # - Monitor the large error samples
+        if DEBUG:
+            # - PDL1 errors
+            pd1_sq_errs = np.sqrt(preds_pd1 - labels_pd1)
+            large_errs_idxs = np.argwhere(pd1_sq_errs > ERROR_THRESHOLD).flatten()
+            err_imgs = imgs[large_errs_idxs]
+            err_img_nms = img_nms[large_errs_idxs]
+            save_images(err_imgs, image_names=err_img_nms, squared_errors=pd1_sq_errs, save_dir=OUTPUT_DIR / 'pd1_errors')
 
-    scatter_fig = plot_scatter(true=[labels_pdl1, labels_pdl2], predicted=[preds_pdl1, preds_pdl2], labels=['pl1', 'pl2'])
+        scatter_fig = plot_scatter(true=[labels_pd1], predicted=[preds_pd1], labels=['pd1'])
+    # - If we're predicting label with 2 values, i.e., PDL1 and PDL2
+    else:
+        labels_pdl1, labels_pdl2 = test_df.loc[:, 'pdl1'].values, test_df.loc[ :, 'pdl2'].values
+        preds_pdl1, preds_pdl2 = preds[:, 0], preds[:, 1]
+
+        # - Monitor the large error samples
+        if DEBUG:
+            # - PDL1 errors
+            pdl1_sq_errs = np.sqrt(preds_pdl1 - labels_pdl1)
+            large_errs_idxs = np.argwhere(pdl1_sq_errs > ERROR_THRESHOLD).flatten()
+            err_imgs = imgs[large_errs_idxs]
+            err_img_nms = img_nms[large_errs_idxs]
+            save_images(err_imgs, image_names=err_img_nms, squared_errors=pdl1_sq_errs, save_dir=OUTPUT_DIR / 'pdl1_errors')
+
+            # - PDL2 errors
+            pdl2_sq_errs = np.sqrt(preds_pdl2 - labels_pdl2)
+            large_errs_idxs = np.argwhere(pdl2_sq_errs > ERROR_THRESHOLD).flatten()
+            err_imgs = imgs[large_errs_idxs]
+            err_img_nms = img_nms[large_errs_idxs]
+            save_images(err_imgs, image_names=err_img_nms, squared_errors=pdl2_sq_errs, save_dir=OUTPUT_DIR / 'pdl2_errors')
+
+        scatter_fig = plot_scatter(true=[labels_pdl1, labels_pdl2], predicted=[preds_pdl1, preds_pdl2], labels=['pdl1', 'pdl2'])
 
     return scatter_fig
 
@@ -435,11 +454,13 @@ if __name__ == '__main__':
         ''')
         plot_output_dir = OUTPUT_DIR / 'plots'
         os.makedirs(plot_output_dir, exist_ok=True)
+        print(f'Saving confusion matrix figure to {plot_output_dir}')
         conf_mat_fig.savefig(plot_output_dir / 'confusion matrix.png')
         plt.close(conf_mat_fig)
     elif REGRESSION_MODEL:
         scatter_fig = test_continuous_label()
         plot_output_dir = OUTPUT_DIR / 'plots'
         os.makedirs(plot_output_dir, exist_ok=True)
+        print(f'Saving regression figure to {plot_output_dir}')
         scatter_fig.savefig(plot_output_dir / 'scatter plot.png')
         plt.close(scatter_fig)
