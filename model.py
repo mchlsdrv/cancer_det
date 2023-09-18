@@ -16,7 +16,10 @@ from tqdm import tqdm
 
 sys.path.append('/home/sidorov/dev')
 
-from ml.nn.cnn.architectures.ResNet import get_resnet50
+from ml.nn.cnn.architectures.ResNet import (
+    get_resnet34,
+    get_resnet50,
+)
 from ml.nn.utils.aux_funcs import (
     get_train_val_split,
     load_checkpoint,
@@ -41,7 +44,6 @@ ARGS = PARSER.parse_args()
 # -- General
 DEBUG = ARGS.debug
 DEVICE = get_device(gpu_id=ARGS.gpu_id)
-# DEVICE = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
 # -- Paths
 DATA_PATH_LOCAL_ROOT = pathlib.Path('/home/sidorov/projects/cancer_det/data')
@@ -80,6 +82,7 @@ EPOCHS = ARGS.epochs
 TO_RGB = True if ARGS.rgb else False
 TO_GRAY = True if not ARGS.rgb else False
 VAL_PROP = 0.2
+# N_WORKERS = 32
 N_WORKERS = 4
 PIN_MEMORY = True
 CHANNELS_FIRST = True
@@ -98,11 +101,17 @@ if CLASSIFICATION_MODEL:
 else:
     LOSS_FUNC = nn.MSELoss()
 
-MODEL = get_resnet50(
+# MODEL = get_resnet50(
+#     image_channels=CHANNELS,
+#     output_size=OUTPUT_SIZE,
+#     prediction_layer=None,
+# ).to(DEVICE)
+MODEL = get_resnet34(
     image_channels=CHANNELS,
     output_size=OUTPUT_SIZE,
     prediction_layer=None,
 ).to(DEVICE)
+
 
 # > Optimizer
 OPTIMIZER = torch.optim.Adam(MODEL.parameters(), lr=LEARNING_RATE)
@@ -174,6 +183,7 @@ def get_name_type(file_name: str) -> (str, str):
     return fl_name, fl_type
 
 
+# TODO: !!! Using CutOut aug
 def get_train_augs():
     return A.Compose(
         [
@@ -185,7 +195,7 @@ def get_train_augs():
             ], p=0.5),
         ], p=1.0)
 
-
+# TODO: !!! Using CutOut aug
 def get_test_augs():
     return A.Compose(
         [
@@ -385,7 +395,6 @@ def test_binary_classification():
     return prcsn, rcll, f1_scr, conf_mat_disp.figure_
 
 
-# noinspection PyShadowingNames
 def test_continuous_label():
     test_df = pd.read_csv(TEST_DATA_FRAME)
     image_files = test_df.loc[:, 'path'].values
@@ -406,7 +415,7 @@ def test_continuous_label():
             err_img_nms = img_nms[large_errs_idxs]
             save_images(err_imgs, image_names=err_img_nms, squared_errors=pd1_sq_errs, save_dir=OUTPUT_DIR / 'pd1_errors')
 
-        scatter_fig = plot_scatter(true=[labels_pd1], predicted=[preds_pd1], labels=['pd1'])
+        plot_scatter(true=[labels_pd1], predicted=[preds_pd1], labels=['pd1'])
     # - If we're predicting label with 2 values, i.e., PDL1 and PDL2
     else:
         labels_pdl1, labels_pdl2 = test_df.loc[:, 'pdl1'].values, test_df.loc[ :, 'pdl2'].values
@@ -428,9 +437,7 @@ def test_continuous_label():
             err_img_nms = img_nms[large_errs_idxs]
             save_images(err_imgs, image_names=err_img_nms, squared_errors=pdl2_sq_errs, save_dir=OUTPUT_DIR / 'pdl2_errors')
 
-        scatter_fig = plot_scatter(true=[labels_pdl1, labels_pdl2], predicted=[preds_pdl1, preds_pdl2], labels=['pdl1', 'pdl2'])
-
-    return scatter_fig
+        plot_scatter(true=[labels_pdl1, labels_pdl2], predicted=[preds_pdl1, preds_pdl2], labels=['pdl1', 'pdl2'])
 
 
 if __name__ == '__main__':
@@ -457,10 +464,6 @@ if __name__ == '__main__':
         print(f'Saving confusion matrix figure to {plot_output_dir}')
         conf_mat_fig.savefig(plot_output_dir / 'confusion matrix.png')
         plt.close(conf_mat_fig)
+
     elif REGRESSION_MODEL:
-        scatter_fig = test_continuous_label()
-        plot_output_dir = OUTPUT_DIR / 'plots'
-        os.makedirs(plot_output_dir, exist_ok=True)
-        print(f'Saving regression figure to {plot_output_dir}')
-        scatter_fig.savefig(plot_output_dir / 'scatter plot.png')
-        plt.close(scatter_fig)
+        test_continuous_label()
